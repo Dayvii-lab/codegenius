@@ -443,4 +443,355 @@ function setStatus(text, isError = false) {
    Chat submission
    ========================================================= */
 el.composer.addEventListener('submit', async (e) => {
-  e
+  e.preventDefault();
+  await sendMessage();
+});
+
+el.stopBtn.addEventListener('click', () => {
+  if (state.abortController) state.abortController.abort();
+});
+
+async function sendMessage() {
+  if (state.streaming) return;
+
+  const text = el.messageInput.value.trim();
+  const images = state.attachments.slice();
+
+  if (!text && !images.length) return;
+
+  hideWelcome();
+  appendMessageEl({ role: 'user', content: text || '(image)', meta: { images: images.length } });
+  state.messages.push({ role: 'user', content: text, images: images.length });
+
+  el.messageInput.value = '';
+  autoResize();
+  state.attachments = [];
+  renderAttachments();
+  updateSendState();
+
+  setStatus('Thinking…');
+  const assistantEl = appendMessageEl({ role: 'assistant', content: '', streaming: true });
+
+  state.streaming = true;
+  el.stopBtn.hidden = false;
+  updateSendState();
+
+  try {
+    if (el.researchToggle.checked && text) {
+      await runResearch(text, assistantEl);
+    } else {
+      await runChat(text, images, assistantEl);
+    }
+  } catch (err) {
+    assistantEl.contentEl.innerHTML = `<p style="color:var(--danger)"><strong>Error:</strong> ${escapeHtml(err.message)}</p>`;
+  } finally {
+    state.streaming = false;
+    el.stopBtn.hidden = true;
+    setStatus('');
+    updateSendState();
+    await loadConversations();
+  }
+}
+
+async function runChat(text, images, assistantEl) {
+  const wantStream = state.settings.stream === 'on';
+  const payload = {
+    conversationId: state.conversationId,
+    message: text,
+    images: images.length ? images.map(({ mime, base64 }) => ({ mime, base64 })) : undefined,
+  };
+
+  if (!state.capabilities.ai) {
+    assistantEl.contentEl.innerHTML =
+      '<p><strong>AI provider is not configured on the server.</strong></p>' +
+      '<p>Set <code>AI_API_KEY</code>, <code>AI_BASE_URL</code>, and <code>AI_MODEL</code> in your <code>.env</code> file, then restart the server.</p>';
+    return;
+  }
+
+  if (!wantStream || images.length) {
+    const data = await api('/api/chat', { method: 'POST', body: JSON.stringify(payload) });
+    state.conversationId = data.conversationId || state.conversationId;
+    assistantEl.contentEl.innerHTML = renderMarkdown(data.content || '');
+    assistantEl.contentEl.dataset.streaming = '';
+    state.messages.push({ role: 'assistant', content: data.content });
+    return;
+  }
+
+  // Streaming
+  const controller = new AbortController();
+  state.abortController = controller;
+
+  const res = await fetch('/api/chat', {
+    method: 'POST',
+    credentials: 'same-origin',
+    headers: { 'Content-Type': 'application/json', Accept: 'text/event-stream' },
+    body: JSON.stringify(payload),
+    signal: controller.signal,
+  });
+
+  if (!res.ok) {
+    const contentType = res.headers.get('content-type') || '';
+    const data = contentType.includes('json') ? await res.json() : { error: await res.text() };
+    throw new Error(data.error || `Request failed (${res.status})`);
+  }
+
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder('utf-8');
+  let buffer = '';
+  let full = '';
+  assistantEl.contentEl.innerHTML = '';
+
+  const applyFull = () => {
+    assistantEl.contentEl.innerHTML = renderMarkdown(full);
+  };
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+
+    let idx;
+    while ((idx = buffer.indexOf('\n\n')) !== -1) {
+      const chunk = buffer.slice(0, idx);
+      buffer = buffer.slice(idx + 2);
+
+      let event = 'message';
+      let dataLine = '';
+      for (const line of chunk.split('\n')) {
+        if (line.startsWith('event:')) event = line.slice(6).trim();
+        else if (line.startsWith('data:')) dataLine += line.slice(5).trim();
+      }
+      if (!dataLine) continue;
+
+      let parsed;
+      try { parsed = JSON.parse(dataLine); } catch { continue; }
+
+      if (event === 'meta') {
+        if (parsed.conversationId) state.conversationId = parsed.conversationId;
+      } else if (event === 'delta') {
+        full += parsed.text || '';
+        applyFull();
+        el.chat.scrollTop = el.chat.scrollHeight;
+      } else if (event === 'error') {
+        throw new Error(parsed.error || 'Streaming error');
+      } else if (event === 'done') {
+        if (parsed.conversationId) state.conversationId = parsed.conversationId;
+      }
+    }
+  }
+
+  assistantEl.contentEl.dataset.streaming = '';
+  state.messages.push({ role: 'assistant', content: full });
+  state.abortController = null;
+}
+
+async function runResearch(query, assistantEl) {
+  if (!state.capabilities.search) {
+    assistantEl.contentEl.innerHTML =
+      '<p><strong>Research mode is not available.</strong></p>' +
+      '<p>Set <code>SEARCH_API_KEY</code> and <code>SEARCH_API_URL</code> on the server to enable web research.</p>';
+    return;
+  }
+
+  const data = await api('/api/research', {
+    method: 'POST',
+    body: JSON.stringify({ query, conversationId: state.conversationId }),
+  });
+  state.conversationId = data.conversationId || state.conversationId;
+
+  let html = renderMarkdown(data.content || '');
+  if (Array.isArray(data.sources) && data.sources.length) {
+    const items = data.sources
+      .map((s, i) => {
+        const safe = safeLink(s.url);
+        const title = escapeHtml(s.title || s.url);
+        return safe
+          ? `<li><a href="${escapeHtml(safe)}" target="_blank" rel="noopener noreferrer">${title}</a></li>`
+          : `<li>${title}</li>`;
+      })
+      .join('');
+    html += `<div class="sources"><strong>Sources</strong><ol>${items}</ol></div>`;
+  }
+  assistantEl.contentEl.innerHTML = html;
+  assistantEl.contentEl.dataset.streaming = '';
+  state.messages.push({ role: 'assistant', content: data.content, meta: { mode: 'research' } });
+}
+
+/* =========================================================
+   Conversations
+   ========================================================= */
+async function loadConversations() {
+  try {
+    const data = await api('/api/conversations');
+    state.conversations = data.conversations || [];
+    renderConversationList();
+  } catch {
+    // guest mode or error — ignore silently
+  }
+}
+
+function renderConversationList() {
+  const filter = (el.searchInput.value || '').trim().toLowerCase();
+  const items = state.conversations.filter((c) => !filter || c.title.toLowerCase().includes(filter));
+
+  el.conversationList.innerHTML = '';
+  el.convEmpty.hidden = items.length > 0;
+
+  for (const c of items) {
+    const li = document.createElement('li');
+    li.className = 'conv-item' + (c.id === state.conversationId ? ' is-active' : '');
+    li.dataset.id = c.id;
+
+    const title = document.createElement('span');
+    title.className = 'conv-item__title';
+    title.textContent = c.title || 'Untitled';
+
+    const actions = document.createElement('span');
+    actions.className = 'conv-item__actions';
+
+    const renameBtn = document.createElement('button');
+    renameBtn.className = 'icon-btn';
+    renameBtn.title = 'Rename';
+    renameBtn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 20h9"/><path d="M16.5 3.5a2.12 2.12 0 013 3L7 19l-4 1 1-4 12.5-12.5z"/></svg>';
+    renameBtn.addEventListener('click', async (e) => {
+      e.stopPropagation();
+      const newTitle = prompt('Rename conversation', c.title || '');
+      if (!newTitle) return;
+      await api(`/api/conversations/${c.id}`, { method: 'PATCH', body: JSON.stringify({ title: newTitle }) });
+      await loadConversations();
+    });
+
+    const delBtn = document.createElement('button');
+    delBtn.className = 'icon-btn';
+    delBtn.title = 'Delete';
+    delBtn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18M8 6V4h8v2M6 6l1 14h10l1-14"/></svg>';
+    delBtn.addEventListener('click', async (e) => {
+      e.stopPropagation();
+      if (!confirm('Delete this conversation?')) return;
+      await api(`/api/conversations/${c.id}`, { method: 'DELETE' });
+      if (c.id === state.conversationId) {
+        state.conversationId = null;
+        state.messages = [];
+        clearChatView();
+        el.chatTitle.textContent = 'New chat';
+      }
+      await loadConversations();
+    });
+
+    actions.appendChild(renameBtn);
+    actions.appendChild(delBtn);
+
+    li.appendChild(title);
+    li.appendChild(actions);
+
+    li.addEventListener('click', () => openConversation(c.id));
+    el.conversationList.appendChild(li);
+  }
+}
+
+async function openConversation(id) {
+  const data = await api(`/api/conversations/${id}`);
+  const conv = data.conversation;
+  if (!conv) return;
+  state.conversationId = conv.id;
+  state.messages = conv.messages || [];
+  el.chatTitle.textContent = conv.title || 'Chat';
+  el.chat.innerHTML = '';
+  for (const m of state.messages) {
+    appendMessageEl({ role: m.role, content: m.content, meta: m.metadata || {} });
+  }
+  renderConversationList();
+  closeSidebar();
+}
+
+el.newChatBtn.addEventListener('click', () => {
+  state.conversationId = null;
+  state.messages = [];
+  state.attachments = [];
+  renderAttachments();
+  clearChatView();
+  el.chatTitle.textContent = 'New chat';
+  renderConversationList();
+  closeSidebar();
+  el.messageInput.focus();
+});
+
+el.clearChatBtn.addEventListener('click', () => {
+  if (!confirm('Clear the current chat view? (Server-side conversation is not deleted.)')) return;
+  state.conversationId = null;
+  state.messages = [];
+  clearChatView();
+  el.chatTitle.textContent = 'New chat';
+});
+
+el.searchInput.addEventListener('input', renderConversationList);
+
+/* examples */
+el.examples.addEventListener('click', (e) => {
+  const btn = e.target.closest('.example');
+  if (!btn) return;
+  const prompt = btn.dataset.prompt || '';
+  el.messageInput.value = prompt;
+  autoResize();
+  updateSendState();
+  el.messageInput.focus();
+  el.composer.requestSubmit();
+});
+
+/* =========================================================
+   Settings
+   ========================================================= */
+el.settingsBtn.addEventListener('click', async () => {
+  el.settingTheme.value = state.settings.theme;
+  el.settingStream.value = state.settings.stream;
+  await loadCapabilities();
+  el.settingsModal.showModal();
+});
+
+el.settingTheme.addEventListener('change', () => applyTheme(el.settingTheme.value));
+el.settingStream.addEventListener('change', () => {
+  state.settings.stream = el.settingStream.value;
+  localStorage.setItem('cp_stream', state.settings.stream);
+});
+
+async function loadCapabilities() {
+  try {
+    const caps = await api('/api/settings/capabilities');
+    state.capabilities = caps;
+    el.capList.innerHTML = '';
+    const rows = [
+      ['AI chat', caps.ai],
+      ['Vision (image analysis)', caps.vision],
+      ['Web search (research mode)', caps.search],
+    ];
+    for (const [label, ok] of rows) {
+      const li = document.createElement('li');
+      li.innerHTML = `${label}: <strong>${ok ? 'Configured' : 'Not configured'}</strong>`;
+      el.capList.appendChild(li);
+    }
+    if (caps.model) {
+      const li = document.createElement('li');
+      li.innerHTML = `Model: <code>${caps.model}</code>`;
+      el.capList.appendChild(li);
+    }
+
+    // Update badge
+    el.statusBadge.hidden = caps.ai;
+    if (!caps.ai) el.statusBadge.textContent = 'AI not configured';
+  } catch {
+    el.capList.innerHTML = '<li class="muted">Could not load capabilities.</li>';
+  }
+}
+
+/* =========================================================
+   Boot
+   ========================================================= */
+async function boot() {
+  autoResize();
+  updateSendState();
+  await loadCapabilities();
+  await loadConversations();
+  el.messageInput.focus();
+}
+
+boot();
