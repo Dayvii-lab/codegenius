@@ -1,0 +1,30 @@
+{
+  "name": "codepilot-ai",
+  "version": "1.0.0",
+  "description": "CodePilot AI - an AI coding chatbot built with HTML, CSS, vanilla JS, Node.js, and Express.",
+  "main": "server/server.js",
+  "type": "commonjs",
+  "scripts": {
+    "start": "node server/server.js",
+    "dev": "node --watch server/server.js",
+    "check": "node scripts/check-config.js",
+    "test": "node --test tests/"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "dependencies": {
+    "archiver": "^7.0.1",
+    "cookie-parser": "^1.4.6",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.5",
+    "express": "^4.19.2",
+    "express-rate-limit": "^7.4.0",
+    "helmet": "^7.1.0",
+    "marked": "^12.0.2",
+    "multer": "^1.4.5-lts.1",
+    "pg": "^8.12.0",
+    "sanitize-html": "^2.13.0"
+  },
+  "license": "MIT"
+}
