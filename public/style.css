@@ -1,0 +1,41 @@
+/* =========================================================
+   CodePilot AI — stylesheet
+   ========================================================= */
+
+:root {
+  --radius-sm: 8px;
+  --radius: 12px;
+  --radius-lg: 16px;
+  --shadow-sm: 0 1px 2px rgba(0,0,0,.25);
+  --shadow: 0 8px 24px rgba(0,0,0,.25);
+  --transition: 160ms ease;
+  --font: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+}
+
+html[data-theme="dark"] {
+  --bg: #0b0d12;
+  --bg-soft: #11141b;
+  --bg-elev: #161a24;
+  --bg-hover: #1d2230;
+  --border: #262b38;
+  --border-strong: #343a4c;
+  --text: #e6e8ee;
+  --text-muted: #9aa1b1;
+  --accent: #6366f1;
+  --accent-soft: rgba(99,102,241,.15);
+  --accent-strong: #818cf8;
+  --danger: #ef4444;
+  --code-bg: #0f1219;
+}
+
+html[data-theme="light"] {
+  --bg: #ffffff;
+  --bg-soft: #f6f7fb;
+  --bg-elev: #ffffff;
+  --bg-hover: #eef1f7;
+  --border: #e3e6ee;
+  --border-strong: #cfd4e0;
+  --text: #0f1219;
+  --text-muted: #5b6273;
+ 
