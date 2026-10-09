@@ -1,0 +1,35 @@
+services:
+  - type: web
+    name: codepilot-ai
+    runtime: node
+    plan: starter
+    buildCommand: npm install
+    startCommand: npm start
+    healthCheckPath: /api/health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: AI_API_KEY
+        sync: false
+      - key: AI_BASE_URL
+        value: https://api.openai.com/v1
+      - key: AI_MODEL
+        value: gpt-4o-mini
+      - key: AI_VISION_MODEL
+        value: gpt-4o-mini
+      - key: SEARCH_API_KEY
+        sync: false
+      - key: SEARCH_API_URL
+        value: https://api.tavily.com/search
+      - key: SESSION_SECRET
+        generateValue: true
+      - key: DATABASE_URL
+        fromDatabase:
+          name: codepilot-db
+          property: connectionString
+
+databases:
+  - name: codepilot-db
+    plan: free
+    databaseName: codepilot
+    user: codepilot
